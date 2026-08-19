@@ -2,7 +2,7 @@ class ProxySwitch < Formula
   desc "Switch between home/office SOCKS proxy modes for Podman containers"
   homepage "https://github.com/GokulArumugam/homebrew-tools"
   url "https://raw.githubusercontent.com/GokulArumugam/homebrew-tools/main/scripts/proxy-switch"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "cbf7de12b6f63da79d32284de5633529ac15fb7a1c48a69eecb769d1b85caef0"
   version "1.0.0"
   head "https://github.com/GokulArumugam/homebrew-tools.git", branch: "main"
 
