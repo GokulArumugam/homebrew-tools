@@ -1,0 +1,151 @@
+#!/bin/bash
+set -e
+
+# proxy-setup — Build llm-proxy-home and llm-proxy-warp containers
+# Usage: proxy-setup
+
+BOLD="\033[1m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+RED="\033[31m"
+RESET="\033[0m"
+
+info()  { echo -e "${GREEN}✓${RESET} $1"; }
+warn()  { echo -e "${YELLOW}!${RESET} $1"; }
+err()   { echo -e "${RED}✗${RESET} $1"; }
+step()  { echo -e "\n${BOLD}=== $1 ===${RESET}"; }
+
+CADDYFILE=':8080 {
+	reverse_proxy https://opencode.ai {
+		header_up Host opencode.ai
+	}
+}'
+
+HOME_ENTRYPOINT='#!/bin/sh
+caddy run --config /etc/caddy/Caddyfile &
+microsocks -p 1080 &
+wait'
+
+WARP_ENTRYPOINT='#!/bin/bash
+set -e
+
+/start-warp.sh &
+sleep 3
+
+script -qc "warp-cli registration new" /dev/null 2>/dev/null || true
+sleep 1
+warp-cli connect 2>/dev/null || true
+sleep 5
+
+caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
+CADDY_PID=$!
+
+microsocks -p 1080 &
+SOCKS_PID=$!
+
+wait $CADDY_PID'
+
+# ---- Pre-flight checks ----
+step "Pre-flight checks"
+
+if ! command -v podman &>/dev/null; then
+    err "Podman not found. Install with: brew install podman"
+    exit 1
+fi
+info "Podman found"
+
+if ! podman machine list --format '{{.Running}}' 2>/dev/null | grep -q true; then
+    warn "Podman machine not running. Starting..."
+    podman machine start
+    sleep 5
+fi
+info "Podman machine running"
+
+# ---- Build llm-proxy-home ----
+step "Building llm-proxy-home (Alpine + Caddy + microsocks)"
+
+if podman inspect llm-proxy-home &>/dev/null; then
+    warn "Container llm-proxy-home already exists. Skipping."
+else
+    podman run -d --name home-builder caddy:alpine sh -c 'sleep 300' >/dev/null 2>&1
+
+    podman exec home-builder sh -c 'apk add --no-cache build-base git' >/dev/null 2>&1
+    podman exec home-builder sh -c 'cd /tmp && git clone https://github.com/rofl0r/microsocks.git && cd microsocks && make && cp microsocks /usr/bin/' >/dev/null 2>&1
+
+    podman exec home-builder sh -c "cat > /etc/caddy/Caddyfile << 'ENDOFFILE'
+${CADDYFILE}
+ENDOFFILE"
+
+    podman exec home-builder sh -c "cat > /entrypoint.sh << 'ENDOFSCRIPT'
+${HOME_ENTRYPOINT}
+ENDOFSCRIPT
+chmod +x /entrypoint.sh"
+
+    podman stop home-builder >/dev/null 2>&1
+    podman commit home-builder llm-proxy-home-img >/dev/null 2>&1
+    podman rm home-builder >/dev/null 2>&1
+
+    podman run -d --name llm-proxy-home \
+        -p 8080:8080 -p 1080:1080 \
+        --entrypoint /entrypoint.sh \
+        llm-proxy-home-img >/dev/null 2>&1
+
+    info "llm-proxy-home built and started"
+fi
+
+# ---- Build llm-proxy-warp ----
+step "Building llm-proxy-warp (WARP + Caddy + microsocks)"
+
+if podman inspect llm-proxy-warp &>/dev/null; then
+    warn "Container llm-proxy-warp already exists. Skipping."
+else
+    podman run -d --name warp-builder \
+        --privileged --cap-add NET_ADMIN --device /dev/net/tun \
+        grinch27/cloudflare-warp >/dev/null 2>&1
+
+    sleep 5
+
+    step "Registering WARP"
+    podman exec warp-builder sh -c 'script -qc "echo y | warp-cli registration new" /dev/null' 2>&1 | tail -1
+    podman exec warp-builder warp-cli connect 2>/dev/null || true
+    sleep 5
+    podman exec warp-builder warp-cli status 2>&1 | tail -2
+
+    step "Installing Caddy + microsocks"
+    podman exec warp-builder sh -c 'apt-get update -qq && apt-get install -y -qq caddy curl microsocks' >/dev/null 2>&1
+
+    podman exec warp-builder sh -c "cat > /etc/caddy/Caddyfile << 'ENDOFFILE'
+${CADDYFILE}
+ENDOFFILE"
+
+    podman exec warp-builder sh -c "cat > /entrypoint.sh << 'ENDOFSCRIPT'
+${WARP_ENTRYPOINT}
+ENDOFSCRIPT
+chmod +x /entrypoint.sh"
+
+    podman stop warp-builder >/dev/null 2>&1
+    podman commit warp-builder warp-caddy-proxy >/dev/null 2>&1
+    podman rm warp-builder >/dev/null 2>&1
+
+    podman run -d --name llm-proxy-warp \
+        --privileged --cap-add NET_ADMIN --device /dev/net/tun \
+        -p 8080:8080 -p 1080:1080 \
+        --entrypoint /entrypoint.sh \
+        warp-caddy-proxy >/dev/null 2>&1
+
+    info "llm-proxy-warp built and started"
+fi
+
+# ---- Stop both (proxy-switch will start the right one) ----
+podman stop llm-proxy-home 2>/dev/null || true
+podman stop llm-proxy-warp 2>/dev/null || true
+
+# ---- Done ----
+step "Setup complete!"
+echo ""
+echo "  proxy-switch home     # Fast direct mode (home WiFi)"
+echo "  proxy-switch office   # WARP mode (bypasses Netskope)"
+echo "  proxy-switch status   # Check current state"
+echo "  proxy-switch off      # Stop everything"
+echo ""
+echo "  Install proxy-switch:  brew tap GokulArumugam/tools && brew install proxy-switch"
