@@ -2,7 +2,7 @@ class ProxySetup < Formula
   desc "Build llm-proxy-home and llm-proxy-warp containers for proxy-switch"
   homepage "https://github.com/GokulArumugam/homebrew-tools"
   url "https://raw.githubusercontent.com/GokulArumugam/homebrew-tools/main/scripts/proxy-setup"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "dc82d8ec038703ca0d2cca2cec59d4399b15954e9f4636bbf7d89cd5a9633347"
   version "1.0.0"
   head "https://github.com/GokulArumugam/homebrew-tools.git", branch: "main"
 
