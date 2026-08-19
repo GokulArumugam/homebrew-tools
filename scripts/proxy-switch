@@ -1,0 +1,63 @@
+#!/bin/bash
+# Switch between home (fast, direct) and office (WARP, bypasses Netskope) modes
+# Uses SOCKS proxy with bypass list for corporate domains
+# Usage: proxy-switch home | proxy-switch office | proxy-switch status | proxy-switch off
+
+BYPASS_DOMAINS="*.atlassian.net *.phonepe.in *.phonepe.com localhost 127.0.0.1 *.local"
+
+case "$1" in
+  home)
+    podman stop llm-proxy-warp 2>/dev/null
+    podman start llm-proxy-home
+    sleep 2
+    networksetup -setautoproxystate "Wi-Fi" off 2>/dev/null
+    networksetup -setsocksfirewallproxy "Wi-Fi" localhost 1080 2>/dev/null
+    networksetup -setsocksfirewallproxystate "Wi-Fi" on 2>/dev/null
+    networksetup -setproxybypassdomains "Wi-Fi" $BYPASS_DOMAINS 2>/dev/null
+    echo "🏠 HOME mode"
+    echo "   LLM API: fast, direct (no WARP)"
+    echo "   Browser:  SOCKS proxy (blocked sites via proxy, corporate direct)"
+    ;;
+  office)
+    podman stop llm-proxy-home 2>/dev/null
+    podman start llm-proxy-warp
+    echo "⏳ Waiting for WARP to connect..."
+    sleep 15
+    networksetup -setautoproxystate "Wi-Fi" off 2>/dev/null
+    networksetup -setsocksfirewallproxy "Wi-Fi" localhost 1080 2>/dev/null
+    networksetup -setsocksfirewallproxystate "Wi-Fi" on 2>/dev/null
+    networksetup -setproxybypassdomains "Wi-Fi" $BYPASS_DOMAINS 2>/dev/null
+    echo "🏢 OFFICE mode"
+    curl -s --max-time 10 --socks5-hostname localhost:1080 https://perplexity.ai >/dev/null 2>&1 && echo "   WARP: ✅ connected" || echo "   WARP: ❌ not connected yet, try again"
+    echo "   Browser:  SOCKS proxy (blocked sites via proxy, corporate direct)"
+    ;;
+  status)
+    home_status=$(podman inspect llm-proxy-home --format '{{.State.Status}}' 2>/dev/null || echo 'not found')
+    warp_status=$(podman inspect llm-proxy-warp --format '{{.State.Status}}' 2>/dev/null || echo 'not found')
+    socks_enabled=$(networksetup -getsocksfirewallproxy "Wi-Fi" 2>/dev/null)
+    if [ "$home_status" = "running" ]; then
+        echo "Mode: 🏠 HOME (fast, direct)"
+    elif [ "$warp_status" = "WARP" ]; then
+        echo "Mode: 🏢 OFFICE (WARP)"
+    else
+        echo "Mode: ❌ None running"
+    fi
+    echo "Home:  $home_status"
+    echo "WARP:  $warp_status"
+    echo "SOCKS: $socks_enabled"
+    ;;
+  off)
+    podman stop llm-proxy-home 2>/dev/null
+    podman stop llm-proxy-warp 2>/dev/null
+    networksetup -setsocksfirewallproxystate "Wi-Fi" off 2>/dev/null
+    networksetup -setautoproxystate "Wi-Fi" off 2>/dev/null
+    echo "⏹ All proxies stopped"
+    ;;
+  *)
+    echo "Usage: proxy-switch {home|office|status|off}"
+    echo "  home    - Fast LLM (no WARP) + SOCKS for browser"
+    echo "  office  - WARP for everything (slower, bypasses Netskope)"
+    echo "  status  - Show current mode"
+    echo "  off     - Stop all proxies, disable proxy"
+    ;;
+esac
